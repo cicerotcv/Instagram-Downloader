@@ -6,6 +6,8 @@ import requests
 from os import listdir, mkdir
 import json
 import time
+from typing import List
+from random import randint
 
 
 class User():
@@ -21,6 +23,9 @@ class User():
         self.followees = self.get_followees_count()
         self.id = self.get_id()
         self.last_posts = self.get_posts()
+        self.posts = self.last_posts
+        self.post_count: int
+        self.page_info: dict
 
     def get_source_code(self) -> str:
         source = requests.get(self.profile_url)
@@ -29,7 +34,7 @@ class User():
         else:
             return "error"
 
-    def get_dict(self):
+    def get_dict(self) -> dict:
         reg_ex = '\"user\":{(.*),\"edge_felix_video_timeline\"'
         match = re.findall(reg_ex, self.source_code)[0]
         user_dict = json.loads("{" + match + "}")
@@ -45,33 +50,55 @@ class User():
         biography = self.dict["biography"]
         return biography
 
-    def get_followers_count(self):
+    def get_followers_count(self) -> int:
         count = self.dict["edge_followed_by"]["count"]
         return count
 
-    def get_followees_count(self):
+    def get_followees_count(self) -> int:
         count = self.dict["edge_follow"]["count"]
         return count
 
-    def get_full_name(self):
+    def get_full_name(self) -> str:
         full_name = self.dict["full_name"]
         return full_name
 
-    def get_id(self):
+    def get_id(self) -> str:
         return self.dict["id"]
 
-    def check_output(self):
-        if self.username not in listdir('.'):
-            mkdir(f"{self.username}")
-
-    def get_posts(self) -> list:
+    def get_posts(self):
         regex = "\"edge_owner_to_timeline_media\":(\{.*\}),\"edge_saved_media\""
         match = re.findall(regex, self.source_code)[0]
-        post_list = json.loads(match)["edges"]
+        data = json.loads(match)
+        self.post_count = data["count"]
+        self.page_info = data["page_info"]
+        post_list = data["edges"]
         return [Post(post) for post in post_list]
 
+    def get_next_page(self):
+        """Fetches next 12 and append it to `self.posts`"""
+        if self.page_info["has_next_page"]:
+            url = "https://www.instagram.com/graphql/query/"
+            payload = {
+                # as it seems, query_hash is always the same
+                # for this kind of query 
+                "query_hash": "bfa387b2992c3a52dcbe447467b4b771",  # hardcoded
+                "id": self.id,
+                "first": 12,
+                "after": self.page_info["end_cursor"]
+            }
+            response = requests.get(url, params=payload)
+            if response.status_code == 200:
+                data = response.json()["data"]
+                user = data["user"]
+                timeline = user["edge_owner_to_timeline_media"]
+                self.page_info = timeline["page_info"]
+                edges = timeline["edges"]
+                new_posts = [Post(post) for post in edges]
+                self.posts += new_posts
+                return new_posts
+
     def save_profile_picture(self):
-        self.check_output()
+        check_output(self.username)
         encoded = self.profile_picture_url.encode()
         decoded = encoded.decode("unicode_escape")
         image = requests.get(decoded).content
@@ -80,21 +107,27 @@ class User():
         file.close()
 
     def save_user_data(self):
-        self.check_output()
+        check_output(self.username)
+        data = {
+            "id": self.id,
+            "username": self.username,
+            "full_name": self.full_name,
+            "followers": self.followers,
+            "followees": self.followees,
+            "biography": self.biography
+        }
         txt_file = open(
-            file=f"./{self.username}/description.txt",
+            file=f"./{self.username}/description.json",
             mode='w+',
             encoding="utf8"
         )
-        # pode ser melhorado
-        print(f"ID: {self.id}", file=txt_file,)
-        print(f"Username: {self.username}", file=txt_file)
-        print(f"Full name: {self.full_name}", file=txt_file)
-        print(f"Followers: {self.followers}", file=txt_file)
-        print(f"Followees: {self.followees}", file=txt_file)
-        print(f"Biography:\n-*-\n{self.biography}\n-*-", file=txt_file)
+        txt_file.write(json.dumps(data))
         txt_file.close()
 
+    def save_posts(self):
+        for post in self.posts:
+            post.save_post()
+            time.sleep(1)
 
 class Post():
     def __init__(self, post_dict: dict):
@@ -119,8 +152,8 @@ class Post():
 
     def get_caption(self) -> str:
         try:
-            edges = data["edge_media_to_caption"]["edges"]
-            node = edges["node"]
+            edges = self.data["edge_media_to_caption"]["edges"]
+            node = edges[0]["node"]
             text = node["text"]
             return text
         except:
@@ -145,7 +178,7 @@ class Post():
         media = []
         if self.type == "GraphImage":
             image_url = self.data["display_url"]
-            media.append(image)
+            media.append(image_url)
 
         elif self.type == "GraphVideo":
             video_url = self.data["video_url"]
@@ -167,17 +200,25 @@ class Post():
         return media
 
     def get_thumbnail(self) -> str:
-        trumbnail = self.data["thumbnail_resources"][-1]
+        thumbnail = self.data["thumbnail_resources"][-1]
         return thumbnail["src"]
 
     def save_post(self):
-        pass
-        # for index,url in enumerate(self.media):
-        #     content = download_media(url)
-        #     basename = self.basename
-        #     ext = get_ext(url)
-        #     filename 
-        #     save_media()
+        username = self.owner['username']
+        basename = self.basename
+        check_output(username)
+        path = f"./{username}/{basename}"
+        for index, url in enumerate(self.media):
+            content = download_media(url)
+            extension = get_ext(url)
+            filename = f"{path}_{index}{extension}"
+            with open(filename, 'wb+') as file:
+                file.write(content)
+        with open(f'{path}.txt', "w+", encoding='utf8') as txt:
+            txt.write(self.caption)
+
+        with open(f'{path}.json', 'w+', encoding='utf-8') as file:
+            file.write(json.dumps(self.data))
 
 
 class Media():
@@ -192,16 +233,24 @@ class Media():
         pass
 
 
-def download_media(url:str) -> bytes:
+def download_media(url: str) -> bytes:
     encoded = url.encode()
     decoded = encoded.decode("unicode_escape")
     content = requests.get(decoded).content
     return content
 
+
 def save_media(basename):
     pass
+
 
 def get_ext(url):
     regex = r'(\.[\d\w]+?)\?'
     ext = re.findall(regex, url)[0]
     return ext
+
+
+def check_output(username):
+    """Asserts output folder's existence"""
+    if username not in listdir('.'):
+        mkdir(f"{username}")
